@@ -1,0 +1,145 @@
+from picamera2 import Picamera2
+import numpy as np
+import cv2
+import time
+import math
+from time import sleep
+import RPi.GPIO as GPIO
+
+
+# Initialize camera
+picam2 = Picamera2()
+picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888"}))
+picam2.start()
+ 
+# Let camera warm up
+time.sleep(2)
+
+picam2.set_controls({
+	#"AwbEnable": True,
+	#"AeEnable":True
+})
+
+time.sleep(2)
+
+metadata = picam2.capture_metadata()
+r_gain, b_gain = metadata["ColourGains"]
+
+picam2.set_controls({
+	#"AwbEnable": True,
+	#"AeEnable": True,
+	#"AnalogueGain": 1.0,
+	#"ColourGains": (r_gain, b_gain)
+})
+
+#conversion from rgb to hexdecimal
+def rgb_to_hex(r, g, b):
+	
+        r = 0 if math.isnan(r) else round(r)
+	
+        g = 0 if math.isnan(g) else round(g)
+	
+        b = 0 if math.isnan(b) else round(b)
+	
+        return "{:02x}{:02x}{:02x}".format(r, g, b)
+	
+#deviance detector:
+def detector(current, previous, threshold):
+    r_diff = abs(current[0] - previous[0])
+    g_diff = abs(current[1] - previous[1])
+    b_diff = abs(current[2] - previous[2])
+    
+    if r_diff > threshold or g_diff > threshold or b_diff > threshold:
+       return True
+	
+    return False
+
+threshold = 50
+
+meta_counter = 24
+hexcode = np.empty((256,meta_counter), dtype='U50') #intialize empty matrix. CHANGE ACCORDING TO USE CASE!!! ROWS is cell count. COLUMNS (meta_counter) is stored data!
+rgbmatrix = np.empty((256,meta_counter), dtype=object) #reeeeee dear god help me
+image = [] #initialize empty array
+
+GPIO.setmode(GPIO.BCM) # we are configuring using GPIO pins
+GPIO.setwarnings(False)
+GPIO.setup(18,GPIO.OUT) # we are using GPIO pin 18, which is physical pin 12. stop getting it confused
+
+#Frame setup
+frame = picam2.capture_array("main")
+    
+    
+# Get image dimensions
+height, width, _ = frame.shape
+crop_fraction = 0.0625
+	
+# Partition Setup
+crop_h = int(height * crop_fraction)
+crop_w = int(width * crop_fraction)
+start_y = 0
+start_x = 0
+column = np.arange(start_y, height + crop_h, crop_h)
+row = np.arange(start_x, width + crop_w, crop_w)
+    
+#print(column)
+#print(row)
+    
+xcounter = 16
+ycounter = 16
+
+for c in range(meta_counter):
+
+    #Initialize the LED
+    GPIO.output(18, GPIO.HIGH)
+    sleep(1) #in order to make sure the light is on before the frame is taken
+	
+	
+    # Capture full frame
+    frame = picam2.capture_array("main")
+	
+
+    for x in range(xcounter-0):
+	    for y in range(ycounter-0):
+	        image.append(frame[column[y+0]:column[y+1], row[x+0]: row[x+1]])
+    
+    
+    # Calculate average Hexcodes
+    cell_counter = 256
+    for i in range(cell_counter):
+            average_color = np.mean(image[i], axis = (0,1))
+            #print(average_color)
+            avg_r, avg_g, avg_b = average_color
+            rgbmatrix[i][c] = average_color
+            hexcode[i][c] = rgb_to_hex(avg_r, avg_g, avg_b)
+ 
+    # Draw a rectangle on the preview to show the region being measured
+    preview_frame1 = frame.copy()
+    cv2.rectangle(preview_frame1, (row[8],column[9]), (row[9],column[8]), (0, 255, 0), 2)
+ 
+    # Display the image
+    cv2.imshow("Camera View", preview_frame1)
+ 
+    # Print average values
+    #print(hexcode[136])
+    print(hexcode[:,c])
+ 
+    # Break loop when 'q' is pressed
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+    
+    GPIO.output(18, GPIO.LOW) #turns off the LED
+    
+    
+    if c > 0:
+	
+        for g in range(cell_counter):
+	    
+            if detector(rgbmatrix[g,c], rgbmatrix[g,c-1], threshold):
+                print(f"Cell {g} has done an uh oh oopsies !!!")
+    
+    sleep(4)
+    image = []
+ 
+# Clean up
+cv2.destroyAllWindows()
+picam2.stop()
